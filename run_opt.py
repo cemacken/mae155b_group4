@@ -1,10 +1,13 @@
 import numpy as np
 
 from openmdao.api import Problem, Group, IndepVarComp, ExecComp, ScipyOptimizeDriver
-from lsdo_utils.api import PowerCombinationComp, LinearPowerCombinationComp
+from lsdo_utils.api import PowerCombinationComp, LinearPowerCombinationComp, LinearCombinationComp
 from openaerostruct.geometry.utils import generate_mesh
 from components.oas_group import OASGroup
 from components.breguet_range.breguet_range_comp import BregRangeCo
+
+from components.breguet_range.breg_range import BregRange # testing new breguet range
+
 from components.zero_lift_drag.zero_lift_group import ZeroLiftGroup
 from components.aeroprop.thrust_comp import thrustComp
 from components.aeroprop.drag_comp import dragComp
@@ -35,27 +38,25 @@ model = Group()
 comp = IndepVarComp()
 # comp.add_output('speed', val=257.22)
 comp.add_output('rnge', val=1.3e6)
-comp.add_output('isp', val=10193) #dummy variable for now
+# comp.add_output('isp', val=10193) #dummy variable for now
+
+comp.add_output('CT', val= 1/10193) #dummy variable for now
+
 comp.add_output('altitude', val = 10000) # in meters
 comp.add_output('characteristic_length', val = 5)
 # comp.add_output('S_w', val = 157)
 # wing parameters
-comp.add_output('span', val = 59)
-comp.add_output('aspect_ratio', val = 9)
+comp.add_output('span', val = 59, units='m')
+# comp.add_output('aspect_ratio', val = 9)
 comp.add_output('dihedral', val = 3, units='deg')
-
-# comp.add_output('BPR', val = 5) # Bypass ratio
-# comp.add_output('max_thrust', val = 490)
+comp.add_output('sweep', val = 27, units='deg')
+# propulsions parameters
+comp.add_output('BPR', val = 5) # Bypass ratio
+comp.add_output('max_thrust', val = 490) # in kN
 
 # Add vars to model, promoting is a quick way of automatically connecting inputs
 # and outputs of different OpenMDAO components
 prob.model.add_subsystem('flight_vars', comp, promotes=['*'])
-
-comp = ExecComp('S_w = span**2 / aspect_ratio')
-prob.model.add_subsystem('wing_area_comp', comp, promotes=['*'])
-
-comp = ExecComp('chord = S_w / span')
-prob.model.add_subsystem('chord_length_comp', comp, promotes=['*'])
 
 atmosphere_group = AtmosphereGroup(shape = shape,)
 prob.model.add_subsystem('atmosphere_group', atmosphere_group, promotes=['*'])
@@ -97,8 +98,11 @@ prob.model.add_subsystem('oas_group', oas_group, promotes=['*'])
 comp = weightCompGroup()
 prob.model.add_subsystem('weight_group', comp, promotes=['*'])
 
-comp = BregRangeCo() 
+comp = BregRange(shape=shape) 
 prob.model.add_subsystem('breguet_range_comp', comp, promotes=['*'])
+
+# comp = BregRangeCo() 
+# prob.model.add_subsystem('breguet_range_comp', comp, promotes=['*'])
 
 # comp = dragComp() # this component computes drag from CD found in OpenAeroStruct
 # prob.model.add_subsystem('drag_comp', comp, promotes=['*'])
@@ -106,36 +110,54 @@ prob.model.add_subsystem('breguet_range_comp', comp, promotes=['*'])
 # comp = liftComp() # this component computes lift from CL found in OpenAeroStruct
 # prob.model.add_subsystem('lift_comp', comp, promotes=['*'])
 
-# comp = thrustComp() 
-# prob.model.add_subsystem('thrust_comp', comp, promotes=['*'])
+comp = thrustComp() 
+prob.model.add_subsystem('thrust_comp', comp, promotes=['*'])
 
 # Computes E = L/D for use in the breguet range component
 comp = ExecComp('LD = CL/CD')
 prob.model.add_subsystem('ld_comp', comp, promotes=['*'])
 
-# comp = ExecComp('TOD = thrust - drag ')
-# prob.model.add_subsystem('TOD', comp, promotes=['*'])
+comp = ExecComp('tot_weight = (fuelburn + emptyTotal*4.45/9.81 + 42760) * 9.81')
+prob.model.add_subsystem('total_weight_calculation', comp, promotes=['*'])
+
+# comp = ExecComp('1 - L / tot_weight')
+# prob.model.add_subsystem('total_weight_comp', comp, promotes=['*'])
+
 
 comp = LinearPowerCombinationComp(
     shape=shape,
     out_name = 'LOW',
     terms_list=[
-        (1.0, dict(
-            L = 1.,  
-        )),
-        (-9.81, dict(
-            emptyTotal = 1,
+        (-1, dict(
+            L = 1,
+            tot_weight = -1,
         )),
     ],
+    constant = 1,
 )
 prob.model.add_subsystem('LOW', comp, promotes=['*'])
 
+comp = LinearCombinationComp(
+            shape=shape,
+            out_name='TOD',
+            coeffs_dict=dict(
+                thrust = 1e3,
+                D = -1,
+    ),
+)
+prob.model.add_subsystem('TOD', comp, promotes=['*'])
+
+comp = ExecComp('aspect_ratio = span**2 / S_ref')
+prob.model.add_subsystem('aspect_ratio_comp', comp, promotes=['*'])
 
 prob.model.connect('aero_point_0.CL', 'CL')
 prob.model.connect('aero_point_0.CD', 'CD')
 prob.model.connect('aero_point_0.wing_perf.L', 'L')
+prob.model.connect('aero_point_0.wing_perf.D', 'D')
 prob.model.connect('dihedral', 'wing.mesh.dihedral.dihedral')
-# prob.model.connect('chord', 'wing.mesh.scale_x.chord'[0])
+prob.model.connect('sweep', 'wing.mesh.sweep.sweep')
+prob.model.connect('span', 'wing.mesh.stretch.span')
+prob.model.connect('aero_point_0.wing.S_ref', 'S_ref')
 
 
 # Import the Scipy Optimizer and set the driver of the problem to use
@@ -154,16 +176,20 @@ prob.driver.options['debug_print'] = ['nl_cons','objs', 'desvars']
 
 # # Setup problem and add design variables, constraint, and objective
 prob.model.add_design_var('alpha', lower=-5, upper = 15)
-prob.model.add_design_var('altitude_km', lower=10, upper = 15)
+prob.model.add_design_var('v', lower=240, upper = 260)
+# prob.model.add_design_var('altitude_km', lower=9, upper = 13)
+# prob.model.add_design_var('aspect_ratio', lower=7, upper = 12)
+# prob.model.add_design_var('sweep', lower=20, upper = 30)
 # # Constraints
 
-# # prob.model.add_constraint('aero_point_0.CL', equals = 0.7)
-# # prob.model.add_constraint('TOD', equals = 0)
+prob.model.add_constraint('LD', lower=18.9, upper=19.1)
+# prob.model.add_constraint('TOD', lower=-1e-3, upper=1e-3, scaler=1e-6)
 prob.model.add_constraint('LOW', lower=-1e-3, upper=1e-3, scaler=1e-6)
+prob.model.add_constraint('Mach_number', lower=0.84, upper=0.85, scaler=1)
 
 # # Objective
 
-prob.model.add_objective('W_f', scaler=-1)
+prob.model.add_objective('fuelburn', scaler=-1)
 
 
 # Set up and run the optimization problem
@@ -171,7 +197,6 @@ prob.setup()
 
 # prob.check_partials(compact_print=True)
 # exit()
-
 
 # # # Run optimization
 
@@ -181,3 +206,4 @@ prob.run_driver()
 
 # prob.model.list_inputs(prom_name=True)
 # prob.model.list_outputs(prom_name=True)
+
