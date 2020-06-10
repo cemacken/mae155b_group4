@@ -1,6 +1,6 @@
 import numpy as np
 
-from openmdao.api import Problem, Group, IndepVarComp, ExecComp, ScipyOptimizeDriver
+from openmdao.api import Group, IndepVarComp, ExecComp, ScipyOptimizeDriver
 from lsdo_utils.api import PowerCombinationComp, LinearPowerCombinationComp
 from openaerostruct.geometry.utils import generate_mesh
 from components.oas_group import OASGroup
@@ -43,7 +43,6 @@ comp.add_output('characteristic_length', val = 5)
 comp.add_output('span', val = 59)
 comp.add_output('aspect_ratio', val = 9)
 comp.add_output('dihedral', val = 3, units='deg')
-# comp.add_output('S_ref', val = 400)
 
 # comp.add_output('BPR', val = 5) # Bypass ratio
 # comp.add_output('max_thrust', val = 490)
@@ -149,14 +148,13 @@ prob.model.connect('dihedral', 'wing.mesh.dihedral.dihedral')
 
 # # Set optimizer as model driver
 prob.driver = ScipyOptimizeDriver()
-prob.driver.options['optimizer'] = 'COBYLA'
-prob.driver.options['tol'] = 1e-9
-prob.driver.options['debug_print'] = ['nl_cons','objs', 'desvars']
+# prob.driver.options['optimizer'] = 'COBYLA'
+# prob.driver.options['tol'] = 1e-9
+# prob.driver.options['debug_print'] = ['nl_cons','objs', 'desvars']
 
 # # Setup problem and add design variables, constraint, and objective
 prob.model.add_design_var('alpha', lower=-5, upper = 15)
 prob.model.add_design_var('altitude_km', lower=10, upper = 15)
-prob.model.add_design_var('S_w', lower=300, upper=500)
 # # Constraints
 
 # # prob.model.add_constraint('aero_point_0.CL', equals = 0.7)
@@ -177,7 +175,7 @@ prob.setup()
 
 # # # Run optimization
 
-prob.run_driver()
+prob.run()
 
 # prob.run_model()
 
